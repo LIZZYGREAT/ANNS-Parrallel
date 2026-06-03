@@ -232,7 +232,7 @@ int main(int argc, char* argv[]) {
         if (data_path.back() != '/') data_path += "/";
     }
 
-    int n_lists = 1024; 
+    int n_lists = 16; 
     int k = 10;         
     
     int hnsw_m = 16;
@@ -303,7 +303,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::vector<int> thread_configs = {1, 2, 4, 8};
-    std::vector<int> nprobe_configs = {8, 16, 32, 64, 128};
+    std::vector<int> nprobe_configs = { 1,2,4};
 
     if (rank == 0) {
         std::cerr << "\n[System] Starting Automated Grid Search Evaluation (MPI Distributed Cluster Parallelism)...\n";

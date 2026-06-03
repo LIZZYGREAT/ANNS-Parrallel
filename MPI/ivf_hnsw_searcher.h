@@ -24,18 +24,12 @@ public:
             return a.dist < b.dist; 
         };
 
-        // 用于维护最终 top_k 结果的大顶堆
-        std::priority_queue<Candidate> final_pq;
-
-        // 1. 粗检索阶段：寻找距离 Query 最近的 nprobe 个 IVF 桶
         std::vector<Candidate> coarse_cands(index->n_lists);
         if (predefined_probes != nullptr) {
-            // 如果由外部 MPI 的 Rank 0 统一下发了探查目标，直接使用
             for (int pi = 0; pi < nprobe; ++pi) {
                 coarse_cands[pi] = predefined_probes[pi];
             }
         } else {
-            // 否则本地计算 Query 到所有 centroids 的距离
             std::vector<float> coarse_dists(index->n_lists);
             compute_all_L2_sqr_d96(query, index->ivf_centroids.data(), index->n_lists, coarse_dists.data());
             
@@ -45,10 +39,19 @@ public:
             std::partial_sort(coarse_cands.begin(), coarse_cands.begin() + nprobe, coarse_cands.end(), cmp_asc);
         }
 
-        // 2. 细检索阶段：在对应的 HNSW 图中进行搜寻
+
+        std::vector<Candidate> all_cands;
+        all_cands.reserve(static_cast<size_t>(nprobe) * top_k);
+
+        float min_centroid_dist = coarse_cands[0].dist;
+        
         for (int pi = 0; pi < nprobe; ++pi) {
+
+            if (pi > 0 && coarse_cands[pi].dist > min_centroid_dist * 1.5f) {
+                break; 
+            }
+
             int list_id = static_cast<int>(coarse_cands[pi].id);
-            
             auto* local_hnsw = index->hnsw_graphs[list_id];
             
             if (local_hnsw == nullptr) {
@@ -57,22 +60,27 @@ public:
 
             auto local_res = local_hnsw->searchKnn(query, top_k);
 
-            // 3. 归并局部结果池到最终的全局堆中
             while (!local_res.empty()) {
                 auto top_item = local_res.top();
                 local_res.pop();
                 
-                // 将结果映射转换放入 final_pq
                 Candidate c;
                 c.dist = top_item.first;
-                c.id = top_item.second;
-                
-                final_pq.push(c);
-                if (final_pq.size() > static_cast<size_t>(top_k)) {
-                    final_pq.pop();
-                }
+                c.id = static_cast<uint32_t>(top_item.second);
+                all_cands.push_back(c);
             }
         }
+
+        if (all_cands.size() > static_cast<size_t>(top_k)) {
+            std::nth_element(all_cands.begin(), all_cands.begin() + top_k, all_cands.end(), cmp_asc);
+            all_cands.resize(top_k); 
+        }
+
+        std::priority_queue<Candidate> final_pq;
+        for (const auto& c : all_cands) {
+            final_pq.push(c);
+        }
+
         return final_pq;
     }
 };

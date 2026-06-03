@@ -297,7 +297,7 @@ int main(int argc, char* argv[]) {
         csv_file << "Algorithm,Threads,NProbe,HNSW_M,HNSW_ef_c,Recall,MaxLocalLatency_us,AvgLocalLatency_us,ImbalanceRatio,QPS,MPIOverhead_us\n";
     }
 
-    std::vector<int> nprobe_configs = {8, 16, 32, 64, 128};
+    std::vector<int> nprobe_configs = {1,2,4,8, 16};
 
     if (rank == 0) {
         std::cerr << "\n[System] Starting Fixed-Thread Single-Loop Evaluation (Server Core Logic Profile)...\n";
