@@ -1,0 +1,85 @@
+# 数据根目录（相对 Lab2/）
+data_root: data
+
+aggregation:
+  processed_dir: processed_data
+
+# type: flat = 单目录 ivfpq_tradeoff + profiler_detail_* ；multi_run = 多时间戳子目录
+datasets:
+  ivf_pq:
+    type: flat
+    root: ivfpq
+    variant_label: "IVF-PQ"
+    framework_label: "Baseline"
+  ivfpq_fast_scan:
+    type: flat
+    root: "ivfpq_fast_scan"
+    variant_label: "IVF-PQ + FastScan"
+    framework_label: "Baseline"
+  openmp_x86:
+    type: multi_run
+    root: open_mp_data_x86
+    variant_label: "Optimized OpenMP"
+    framework_label: OpenMP
+  pthread_x86:
+    type: multi_run
+    root: pthread_data_x86
+    variant_label: "Optimized Pthread"
+    framework_label: Pthread
+  openmp_arm:
+    type: multi_run
+    root: open_mp_data_arm
+    variant_label: "Optimized OpenMP (ARM)"
+    framework_label: OpenMP
+  pthread_arm:
+    type: multi_run
+    root: pthread_data_arm
+    variant_label: "Optimized Pthread (ARM)"
+    framework_label: Pthread
+  per_query_x86:
+    type: multi_run
+    root: per_query_x86
+    variant_label: "Per-Query Task Parallel"
+    framework_label: per_query
+  per_query_arm:
+    type: multi_run
+    root: per_query_arm
+    variant_label: "Per-Query Task Parallel (ARM)"
+    framework_label: per_query
+  qps_x86:
+    type: multi_run
+    root: qps_x86
+    variant_label: "Batch Query Parallel (QPS)"
+    framework_label: qps
+  qps_arm:
+    type: multi_run
+    root: qps_arm
+    variant_label: "Batch Query Parallel (ARM)"
+    framework_label: qps
+
+# Per-Query 任务并行 vs Batch 数据并行
+scheduling_compare:
+  x86: [per_query_x86, qps_x86]
+  arm: [per_query_arm, qps_arm]
+  compare_threads: [4, 8]
+  highlight_nprobe: 32
+  methods: [ADC, SDC]
+
+# OpenMP vs Pthread 对比
+report_compare:
+  - openmp_x86
+  - pthread_x86
+
+# 算法演进柱状图顺序
+evolution:
+  datasets: [ivf_pq, ivfpq_fast_scan, openmp_arm, pthread_arm]
+  nprobe: 32
+  threads: 4
+  method: ADC
+
+plot:
+  compare_threads: [4, 8]
+  profile_threads: 4
+  profile_nprobe: 32
+  error_bars: true
+  figures_dir: figures
