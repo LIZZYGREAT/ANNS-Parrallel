@@ -96,7 +96,6 @@ public:
     SDCSearcher(const IVFPQIndex* idx, const float* base, int ratio = 20)
         : index(idx), base_data(base), rerank_ratio(ratio) {
         
-        // 预计算所有子空间中，16个聚类中心两两之间的 L2 距离平方
         center_dist_table.resize(static_cast<size_t>(FS_M * 256));
         for (int m = 0; m < FS_M; ++m) {
             for (int i = 0; i < 16; ++i) {
@@ -110,13 +109,14 @@ public:
         }
     }
 
-    std::priority_queue<Candidate> search(const float* query, int top_k, int nprobe) override {
+    const IVFPQIndex* get_index() const override { return index; }
+
+    std::priority_queue<Candidate> search(const float* query, int top_k, int nprobe, const Candidate* predefined_probes = nullptr) override {
         int rerank_k = top_k * rerank_ratio;
         auto cmp_asc = [](const Candidate& a, const Candidate& b) {
             return a.dist < b.dist;
         };
 
-        // 通过 thread_local 为每个批处理线程圈出自己的绝对私有空间
         thread_local AlignedBuffer<float> local_coarse_dists;
         thread_local std::vector<Candidate> local_coarse_cands;
         thread_local SearchWorkspace local_ws;
@@ -135,15 +135,17 @@ public:
         }
         local_topk.clear();
 
-        // 1. 粗量化距离计算
-        compute_all_L2_sqr_d96(query, index->ivf_centroids.data(), index->n_lists, local_coarse_dists.data());
-        for (int c = 0; c < index->n_lists; ++c) {
-            local_coarse_cands[static_cast<size_t>(c)] = {local_coarse_dists[c], static_cast<uint32_t>(c)};
+        if (predefined_probes != nullptr) {
+            for (int pi = 0; pi < nprobe; ++pi) {
+                local_coarse_cands[pi] = predefined_probes[pi];
+            }
+        } else {
+            compute_all_L2_sqr_d96(query, index->ivf_centroids.data(), index->n_lists, local_coarse_dists.data());
+            for (int c = 0; c < index->n_lists; ++c) {
+                local_coarse_cands[static_cast<size_t>(c)] = {local_coarse_dists[c], static_cast<uint32_t>(c)};
+            }
+            std::partial_sort(local_coarse_cands.begin(), local_coarse_cands.begin() + nprobe, local_coarse_cands.end(), cmp_asc);
         }
-
-        // 2. 粗量化粗筛
-        std::partial_sort(local_coarse_cands.begin(), local_coarse_cands.begin() + nprobe,
-                          local_coarse_cands.end(), cmp_asc);
 
         // 3. 倒排桶探查
         float threshold = std::numeric_limits<float>::max();
@@ -152,7 +154,7 @@ public:
             scan_probe_list(list_id, local_coarse_cands[pi].dist, query, local_ws,
                             threshold, local_topk, rerank_k, cmp_asc);
         }
-
+        
         // 4. 局部 Top-K 截断
         if (local_topk.size() > static_cast<size_t>(rerank_k)) {
             std::nth_element(local_topk.begin(), local_topk.begin() + rerank_k, local_topk.end(), cmp_asc);

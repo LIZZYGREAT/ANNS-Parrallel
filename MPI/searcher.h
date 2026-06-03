@@ -11,6 +11,8 @@ struct Candidate {
     }
 };
 
+class IVFPQIndex;
+
 class BaseSearcher {
 public:
     virtual ~BaseSearcher() = default;
@@ -18,5 +20,7 @@ public:
     virtual std::priority_queue<Candidate> search(
         const float* query, 
         int top_k, 
-        int nprobe) = 0;
+        int nprobe,
+        const Candidate* predefined_probes = nullptr) = 0; 
+    virtual const IVFPQIndex* get_index() const = 0;
 };

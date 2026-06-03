@@ -66,14 +66,40 @@ void run_mpi_evaluation(int thread_count, int nprobe, SearcherType* searcher,
                         int rank, int size) {
 
     tp::set_num_threads(thread_count);
-    
-
     std::vector<DistancePair> local_results(test_number * k);
 
+    std::vector<Candidate> all_probes(test_number * nprobe);
+    if (rank == 0) {
+        tp::parallel_region([&](int tid) {
+            const size_t chunk = (test_number + static_cast<size_t>(thread_count) - 1) / static_cast<size_t>(thread_count);
+            const size_t start_idx = static_cast<size_t>(tid) * chunk;
+            const size_t end_idx = std::min(test_number, start_idx + chunk);
+            
+            const IVFPQIndex* idx = searcher->get_index();
+            int n_lists = idx->n_lists;
+            std::vector<float> dists(n_lists);
+            std::vector<Candidate> coarse_cands(n_lists);
+
+            for (size_t i = start_idx; i < end_idx; ++i) {
+                const float* q = test_query + i * vecdim;
+                compute_all_L2_sqr_d96(q, idx->ivf_centroids.data(), n_lists, dists.data());
+                for (int c = 0; c < n_lists; ++c) coarse_cands[c] = {dists[c], static_cast<uint32_t>(c)};
+                std::partial_sort(coarse_cands.begin(), coarse_cands.begin() + nprobe, coarse_cands.end(), 
+                                  [](const Candidate& a, const Candidate& b){ return a.dist < b.dist; });
+                for (int p = 0; p < nprobe; ++p) {
+                    all_probes[i * nprobe + p] = coarse_cands[p];
+                }
+            }
+        });
+    }
+
+    // Rank 0 广播所有 Query 的倒排桶探查目标
+    MPI_Bcast(all_probes.data(), test_number * nprobe * sizeof(Candidate), MPI_BYTE, 0, MPI_COMM_WORLD);
     MPI_Barrier(MPI_COMM_WORLD);
 
-    struct timeval batch_val;
-    gettimeofday(&batch_val, NULL);
+
+    struct timeval start_local, end_local;
+    gettimeofday(&start_local, NULL);
 
     tp::parallel_region([&](int tid) {
         const size_t chunk = (test_number + static_cast<size_t>(thread_count) - 1) / static_cast<size_t>(thread_count);
@@ -82,23 +108,32 @@ void run_mpi_evaluation(int thread_count, int nprobe, SearcherType* searcher,
 
         for (size_t i = start_idx; i < end_idx; ++i) {
             const float* query_vec = test_query + i * vecdim;
+            // 获取 Rank 0 下发的命中倒排桶 ID
+            const Candidate* my_probes = &all_probes[i * nprobe]; 
             
-            std::priority_queue<Candidate> pq_res = searcher->search(query_vec, k, nprobe);
+            std::priority_queue<Candidate> pq_res = searcher->search(query_vec, k, nprobe, my_probes);
 
             int idx = k - 1;
             while (!pq_res.empty() && idx >= 0) {
                 Candidate c = pq_res.top();
                 pq_res.pop();
-                
                 DistancePair dp;
                 dp.dist = c.dist;
                 dp.id = rank * local_base_number + c.id; 
-                
                 local_results[i * k + idx] = dp;
                 idx--;
             }
         }
     });
+
+    gettimeofday(&end_local, NULL);
+    double local_time_us = (end_local.tv_sec - start_local.tv_sec) * 1000000.0 + (end_local.tv_usec - start_local.tv_usec);
+    double max_local_time_us = 0.0;
+
+    MPI_Reduce(&local_time_us, &max_local_time_us, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
+    struct timeval start_gather, end_gather;
+    gettimeofday(&start_gather, NULL);
 
     std::vector<DistancePair> global_gathered_results;
     if (rank == 0) {
@@ -111,35 +146,26 @@ void run_mpi_evaluation(int thread_count, int nprobe, SearcherType* searcher,
 
     if (rank == 0) {
         std::vector<int> final_global_indices(test_number * k);
-        
-        // 多路归并排序
         for (size_t q = 0; q < test_number; ++q) {
             std::vector<DistancePair> candidates;
             candidates.reserve(size * k);
-            
             for (int r = 0; r < size; ++r) {
                 int offset = r * (test_number * k) + q * k;
                 for (size_t j = 0; j < k; ++j) {
                     candidates.push_back(global_gathered_results[offset + j]);
                 }
             }
-            
             std::sort(candidates.begin(), candidates.end(), [](const DistancePair& a, const DistancePair& b) {
                 return a.dist < b.dist;
             });
-            
             for (size_t j = 0; j < k; ++j) {
                 final_global_indices[q * k + j] = candidates[j].id;
             }
         }
 
-        struct timeval new_batch_val;
-        gettimeofday(&new_batch_val, NULL);
-        const unsigned long Converter = 1000 * 1000;
-        int64_t batch_diff_us = (new_batch_val.tv_sec * Converter + new_batch_val.tv_usec) - 
-                                (batch_val.tv_sec * Converter + batch_val.tv_usec);
-
-        // 计算召回率
+        gettimeofday(&end_gather, NULL);
+        double gather_merge_time_us = (end_gather.tv_sec - start_gather.tv_sec) * 1000000.0 + (end_gather.tv_usec - start_gather.tv_usec);
+        
         double total_recall = 0.0;
         for (size_t q = 0; q < test_number; ++q) {
             std::set<uint32_t> gtset;
@@ -154,19 +180,28 @@ void run_mpi_evaluation(int thread_count, int nprobe, SearcherType* searcher,
         }
 
         float final_recall = total_recall / test_number;
-        float final_latency = (float)batch_diff_us / test_number;
-        float qps = (float)test_number / ((float)batch_diff_us / 1000000.0f);
+        float local_latency_per_query = max_local_time_us / test_number;
+        float qps = test_number / (max_local_time_us / 1000000.0f); 
 
         std::cerr << fixed << setprecision(4);
         std::cerr << "[Result] Method: " << method_name << " | Threads: " << thread_count
                   << " | NProbe: " << nprobe << " | Recall: " << final_recall
-                  << " | Avg Latency: " << final_latency << " us"
-                  << " | QPS: " << qps << "\n";
+                  << " | Local Latency: " << local_latency_per_query << " us"
+                  << " | QPS: " << qps 
+                  << " | (MPI Overhead: " << (gather_merge_time_us / test_number) << " us/q)\n";
 
-        csv_file << method_name << "," << thread_count << "," << nprobe << ","
-                 << final_recall << "," << final_latency << "," << qps << "\n";
+
+        csv_file << method_name << "," 
+                 << thread_count << "," 
+                 << nprobe << ","
+                 << final_recall << "," 
+                 << local_latency_per_query << "," 
+                 << qps << "," 
+                 << (gather_merge_time_us / test_number) << "\n";
+        csv_file.flush(); 
     }
 }
+
 
 int main(int argc, char* argv[]) {
     MPI_Init(&argc, &argv);
@@ -239,7 +274,7 @@ int main(int argc, char* argv[]) {
     std::ofstream csv_file;
     if (rank == 0) {
         csv_file.open(out_dir + "/results.csv");
-        csv_file << "Algorithm,Threads,NProbe,Latency,Recall\n";
+        csv_file << "Algorithm,Threads,NProbe,Recall,LocalLatency_us,QPS,MPIOverhead_us\n";
     }
 
     // 网格搜索评测配置集

@@ -62,24 +62,36 @@ public:
                       << ", M=" << M << ", K=" << K << ", d_sub=" << d_sub << "\n";
         }
 
-        // =========================================================
+
         // 全局 IVF 粗聚类中心训练与广播
-        // =========================================================
         {
             MicroProfiler::Timer _t("1_Train_IVF_&_Bcast");
+            
+            int sample_per_node = std::min(static_cast<size_t>(25000), local_n);
+            std::vector<float> local_sample(sample_per_node * d);
+            
+            for(int i = 0; i < sample_per_node; ++i) {
+                size_t idx = (local_n / sample_per_node) * i; 
+                std::memcpy(&local_sample[i * d], &local_data[idx * d], d * sizeof(float));
+            }
+
+            std::vector<float> global_sample;
+            if (rank == 0) {
+                global_sample.resize(sample_per_node * size * d);
+            }
+
+            MPI_Gather(local_sample.data(), sample_per_node * d, MPI_FLOAT,
+                       global_sample.data(), sample_per_node * d, MPI_FLOAT,
+                       0, MPI_COMM_WORLD);
+
             if (rank == 0) {
                 KMeans ivf_km(d, n_lists);
-                // Rank 0 直接使用其分配到的数据切片作为采样集进行全局中心训练
-                ivf_km.train(local_data, local_n); 
+                ivf_km.train(global_sample.data(), sample_per_node * size);
                 std::memcpy(ivf_centroids.data(), ivf_km.centroids.data(), n_lists * d * sizeof(float));
             }
-            // Master 将训练好的 IVF 中心点广播给所有 Workers
             MPI_Bcast(ivf_centroids.data(), n_lists * d, MPI_FLOAT, 0, MPI_COMM_WORLD);
         }
 
-        // =========================================================
-        // 各个 Rank 并行计算自己本地数据的残差
-        // =========================================================
         std::vector<int> assign(local_n);
         std::vector<float> residuals(local_n * d);
 
