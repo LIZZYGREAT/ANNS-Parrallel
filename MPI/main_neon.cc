@@ -174,7 +174,18 @@ int main(int argc, char* argv[]) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    std::string data_path = "./anndata/";
+    int thread_count = 4; 
+
+
+    std::string data_path = "/anndata/"; 
+    
+    if (argc > 1) {
+        thread_count = std::atoi(argv[1]);
+    }
+    if (argc > 2) {
+        data_path = argv[2];
+        if (data_path.back() != '/') data_path += "/";
+    }
 
     int n_lists = 1024; 
     int k = 10;         
@@ -190,7 +201,7 @@ int main(int argc, char* argv[]) {
     std::string out_dir = "";
 
     if (rank == 0) {
-        std::cerr << "[System] Rank 0 loading high-dimensional data sets...\n";
+        std::cerr << "[System] Rank 0 loading high-dimensional data sets from: " << data_path << "\n";
         full_base = LoadData<float>(data_path + "DEEP100K.base.100k.fbin", base_number, vecdim);
         test_query = LoadData<float>(data_path + "DEEP100K.query.fbin", test_number, query_dim);
         test_gt = LoadData<int>(data_path + "DEEP100K.gt.query.100k.top100.bin", test_number, test_gt_d);
@@ -200,12 +211,11 @@ int main(int argc, char* argv[]) {
             MPI_Abort(MPI_COMM_WORLD, -1);
         }
 
-        test_number = 200;
+        test_number = 2000;
         
         out_dir = make_run_dir(n_lists);
-        mkdir("files", 0777);
+        mkdir("files", 0777); 
         mkdir(out_dir.c_str(), 0777);
-        std::cerr << "[System] Output telemetry files will be saved to: " << out_dir << "\n";
     }
 
     MPI_Bcast(&base_number, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -232,7 +242,7 @@ int main(int argc, char* argv[]) {
     IVFPQIndex index(vecdim, n_lists);
     index.build(local_base, local_base_number, rank, size);
 
-    int rerank_ratio = 100; 
+    int rerank_ratio = 100;
     ADCSearcher adc_searcher(&index, local_base, rerank_ratio);
     SDCSearcher sdc_searcher(&index, local_base, rerank_ratio);
 
@@ -240,32 +250,23 @@ int main(int argc, char* argv[]) {
     if (rank == 0) {
         csv_file.open(out_dir + "/results.csv");
         csv_file << "Algorithm,Threads,NProbe,Latency,Recall\n";
+        std::cerr << "\n[System] Starting Evaluation (MPI Size: " << size << ", Threads per MPI: " << thread_count << ")...\n";
     }
 
-    // 网格搜索评测配置集
-    std::vector<int> thread_configs = {1, 2, 4, 8};
     std::vector<int> nprobe_configs = {8, 16, 32, 64, 128};
 
-    if (rank == 0) {
-        std::cerr << "\n[System] Starting Automated Grid Search Evaluation (MPI Distributed Cluster Parallelism)...\n";
-    }
-
     // 评测 ADC 算法
-    for (int t : thread_configs) {
-        for (int probe : nprobe_configs) {
-            run_mpi_evaluation(t, probe, &adc_searcher, test_query, test_gt,
-                               test_number, vecdim, test_gt_d, k, csv_file, 
-                               "ADC", out_dir, local_base_number, rank, size);
-        }
+    for (int probe : nprobe_configs) {
+        run_mpi_evaluation(thread_count, probe, &adc_searcher, test_query, test_gt,
+                           test_number, vecdim, test_gt_d, k, csv_file, 
+                           "ADC", out_dir, local_base_number, rank, size);
     }
 
     // 评测 SDC 算法
-    for (int t : thread_configs) {
-        for (int probe : nprobe_configs) {
-            run_mpi_evaluation(t, probe, &sdc_searcher, test_query, test_gt,
-                               test_number, vecdim, test_gt_d, k, csv_file, 
-                               "SDC", out_dir, local_base_number, rank, size);
-        }
+    for (int probe : nprobe_configs) {
+        run_mpi_evaluation(thread_count, probe, &sdc_searcher, test_query, test_gt,
+                           test_number, vecdim, test_gt_d, k, csv_file, 
+                           "SDC", out_dir, local_base_number, rank, size);
     }
 
     if (rank == 0) {
@@ -274,9 +275,9 @@ int main(int argc, char* argv[]) {
         meta << "algorithm=IVFPQ_ADC-SDC\n";
         meta << "n_lists=" << n_lists << "\n";
         meta << "mpi_size=" << size << "\n";
+        meta << "threads_per_mpi=" << thread_count << "\n";
         meta << "local_base_per_node=" << local_base_number << "\n";
         meta.close();
-        std::cerr << "\n[System] Evaluation pipeline completed successfully. All data stored safely.\n";
         
         delete[] test_gt;
     }
