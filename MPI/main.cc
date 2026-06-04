@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <queue>
 #include <ctime>
+#include <limits> 
 
 #include "profiler.h"
 #include "hnsw_hnsw_index.h"
@@ -66,7 +67,8 @@ void run_mpi_evaluation(int thread_count, int nprobe, SearcherType* searcher,
                         int rank, int size, int hnsw_m, int hnsw_ef_c) {
 
     tp::set_num_threads(thread_count);
-    std::vector<DistancePair> local_results(test_number * k);
+    
+    std::vector<DistancePair> local_results(test_number * k, {std::numeric_limits<float>::max(), -1});
 
     MPI_Barrier(MPI_COMM_WORLD);
 
@@ -194,12 +196,15 @@ int main(int argc, char* argv[]) {
     if (argc > 1) {
         thread_count = std::atoi(argv[1]);
     }
+    
+    tp::set_num_threads(thread_count);
+    
     if (argc > 2) {
         data_path = argv[2];
         if (data_path.back() != '/') data_path += "/";
     }
 
-    int n_lists = 8; 
+    int n_lists = 4; 
     int k = 10;         
     
     int hnsw_m = 16;
@@ -226,7 +231,7 @@ int main(int argc, char* argv[]) {
             MPI_Abort(MPI_COMM_WORLD, -1);
         }
 
-        test_number = 200;
+        test_number = 2000;
         
         out_dir = make_run_dir(n_lists);
         mkdir("files", 0777); 
@@ -268,7 +273,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::vector<int> thread_configs = {1, 2, 4, 8};
-    std::vector<int> nprobe_configs = { 1, 2, 4,8};
+    std::vector<int> nprobe_configs = { 1, 2, 4};
 
     if (rank == 0) {
         std::cerr << "\n[System] Starting Automated Grid Search Evaluation (MPI HNSW+HNSW)...\n";

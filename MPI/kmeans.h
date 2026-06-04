@@ -49,17 +49,31 @@ public:
                 const size_t chunk = (n + static_cast<size_t>(max_threads) - 1) / static_cast<size_t>(max_threads);
                 const size_t i0 = static_cast<size_t>(tid) * chunk;
                 const size_t i1 = std::min(n, i0 + chunk);
+                
+                std::vector<float> dist_buf(k);
+
                 for (size_t i = i0; i < i1; ++i) {
                     const float* current_data = &train_data[i * d];
                     float min_dist = std::numeric_limits<float>::max();
                     int best_c = 0;
-                    for (int c = 0; c < k; ++c) {
-                        float dist = compute_L2_sqr(current_data, &centroids[c * d], d);
-                        if (dist < min_dist) {
-                            min_dist = dist;
-                            best_c = c;
+                    if (d == 96) {
+                        compute_all_L2_sqr_d96(current_data, centroids.data(), k, dist_buf.data());
+                        for (int c = 0; c < k; ++c) {
+                            if (dist_buf[c] < min_dist) {
+                                min_dist = dist_buf[c];
+                                best_c = c;
+                            }
+                        }
+                    } else {
+                        for (int c = 0; c < k; ++c) {
+                            float dist = compute_L2_sqr(current_data, &centroids[c * d], d);
+                            if (dist < min_dist) {
+                                min_dist = dist;
+                                best_c = c;
+                            }
                         }
                     }
+                    
                     my_counts[best_c]++;
                     for (int j = 0; j < d; ++j) {
                         my_centroids_sum[best_c * d + j] += current_data[j];

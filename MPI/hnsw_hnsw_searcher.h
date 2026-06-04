@@ -17,24 +17,31 @@ public:
     std::priority_queue<Candidate> search(
         const float* query, 
         int top_k, 
-        int nprobe) {
+        int nprobe) const { 
         
         auto cmp_asc = [](const Candidate& a, const Candidate& b) {
             return a.dist < b.dist; 
         };
 
-        index->top_hnsw->setEf(std::max(10, nprobe));
         auto top_res = index->top_hnsw->searchKnn(query, nprobe);
         
-        std::vector<int> target_buckets;
-        target_buckets.reserve(nprobe);
+        thread_local std::vector<int> target_buckets;
+        target_buckets.clear();
+        if (target_buckets.capacity() < static_cast<size_t>(nprobe)) {
+            target_buckets.reserve(nprobe);
+        }
+        
         while (!top_res.empty()) {
             target_buckets.push_back(static_cast<int>(top_res.top().second));
             top_res.pop();
         }
 
-        std::vector<Candidate> all_cands;
-        all_cands.reserve(static_cast<size_t>(nprobe) * top_k);
+        thread_local std::vector<Candidate> all_cands;
+        all_cands.clear();
+        size_t required_capacity = static_cast<size_t>(nprobe) * top_k;
+        if (all_cands.capacity() < required_capacity) {
+            all_cands.reserve(required_capacity);
+        }
 
         for (int bucket_id : target_buckets) {
             auto* local_hnsw = index->bottom_hnsws[bucket_id];
@@ -43,7 +50,6 @@ public:
                 continue;
             }
 
-            local_hnsw->setEf(std::max(top_k, 50));
             auto local_res = local_hnsw->searchKnn(query, top_k);
 
             while (!local_res.empty()) {

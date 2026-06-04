@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <queue>
 #include <ctime>
+#include <limits> 
 
 #include "profiler.h"
 #include "hnsw_hnsw_index.h"
@@ -66,8 +67,7 @@ void run_mpi_evaluation(int thread_count, int nprobe, SearcherType* searcher,
                         int rank, int size, int hnsw_m, int hnsw_ef_c) {
 
     tp::set_num_threads(thread_count);
-    std::vector<DistancePair> local_results(test_number * k);
-
+    std::vector<DistancePair> local_results(test_number * k, {std::numeric_limits<float>::max(), -1});
     MPI_Barrier(MPI_COMM_WORLD);
 
     struct timeval start_local, end_local;
@@ -194,6 +194,9 @@ int main(int argc, char* argv[]) {
     if (argc > 1) {
         thread_count = std::atoi(argv[1]);
     }
+
+    tp::set_num_threads(thread_count);
+    
     if (argc > 2) {
         data_path = argv[2];
         if (data_path.back() != '/') data_path += "/";
