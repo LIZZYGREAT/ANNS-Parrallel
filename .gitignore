@@ -11,3 +11,4 @@
 *main
 *docs
 qsub_mpi.sh
+**__pycache__
